@@ -1,0 +1,12 @@
+fileFormatVersion: 2
+guid: 2a5b02e4424077740843727f01c29b08
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - prefabTuberia: {fileID: 6408123303172016649, guid: a38bcd45250cd104b8b4a2aecbb03fd0, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
