@@ -1,89 +1,44 @@
 using UnityEngine;
-using UnityEngine.SceneManagement; // Necesario para detectar cambios de escena
 
+// Gestiona la música de fondo — cambia la canción según la pantalla en la que estés
+// Ponlo en el mismo GameObject que el GameManager (o en uno propio)
+// Necesita un AudioSource en el mismo objeto
 [RequireComponent(typeof(AudioSource))]
 public class GestorAudio : MonoBehaviour
 {
-    public static GestorAudio Instance { get; private set; }
+    [Header("Música por pantalla")]
+    public AudioClip musicaMenu;        // Suena en la pantalla de bienvenida
+    public AudioClip musicaJuego;       // Suena durante la partida
+    public AudioClip musicaGameOver;    // Suena en la pantalla de game over
 
-    [Header("Efectos de Sonido (SFX)")]
-    public AudioClip sfxPunto;
-
-    [Header("Canciones por Escena")]
-    public AudioClip musicaMenu;
-    public AudioClip musicaJuego;
-    public AudioClip musicaGameOver;
-
-    [Header("Configuración")]
-    [Range(0f, 1f)] public float volumenMusica = 0.3f;
+    [Header("Volumen")]
+    [Range(0f, 1f)] public float volumenMusica = 0.4f;
 
     private AudioSource audioSource;
 
     void Awake()
     {
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
-
-        Instance = this;
-        DontDestroyOnLoad(gameObject);
-
         audioSource = GetComponent<AudioSource>();
-        audioSource.loop = true; 
+
+        // La música va en bucle siempre
+        audioSource.loop   = true;
         audioSource.volume = volumenMusica;
     }
 
-    void OnEnable()
+    // Cambia la canción que suena. Si ya está sonando esa misma, no hacemos nada.
+    public void CambiarMusica(AudioClip nuevaMusica)
     {
-        // Nos suscribimos al evento de Unity que avisa cuando una escena nueva termina de cargar
-        SceneManager.sceneLoaded += AlCargarEscena;
+        if (nuevaMusica == null) return;
 
-        EventosUI.OnPuntoLogrado += ReproducirSonidoPunto; // Escuchamos el punto
+        // Evitamos cortar y volver a poner la misma canción
+        if (audioSource.clip == nuevaMusica) return;
+
+        audioSource.clip = nuevaMusica;
+        audioSource.Play();
     }
 
-    void OnDisable()
-    {
-        // Nos desuscribimos para evitar errores si este objeto se destruye
-        SceneManager.sceneLoaded -= AlCargarEscena;
-
-        EventosUI.OnPuntoLogrado -= ReproducirSonidoPunto;
-    }
-
-    private void ReproducirSonidoPunto()
-    {
-        if (sfxPunto != null) audioSource.PlayOneShot(sfxPunto);
-    }
-
-    // Este método se ejecuta automáticamente cada vez que entras a una nueva escena
-    private void AlCargarEscena(Scene escena, LoadSceneMode modo)
-    {
-        AudioClip nuevaCancion = null;
-
-        // Decidimos qué canción poner según el nombre de la escena
-        switch (escena.name)
-        {
-            case "MenuPrincipal":
-                nuevaCancion = musicaMenu;
-                break;
-            case "EscenaJuego":
-            case "Nivel1": 
-            case "Nivel2":
-            case "Nivel3":
-                // Todos los niveles usan la misma canción de acción
-                nuevaCancion = musicaJuego; 
-                break;
-            case "GameOver":
-                nuevaCancion = musicaGameOver;
-                break;
-        }
-
-        // Si la canción que toca es diferente a la que ya está sonando, la cambiamos
-        if (nuevaCancion != null && audioSource.clip != nuevaCancion)
-        {
-            audioSource.clip = nuevaCancion;
-            audioSource.Play();
-        }
-    }
+    // Métodos de acceso rápido — el GameManager los llama según la pantalla
+    public void PonerMusicaMenu()     => CambiarMusica(musicaMenu);
+    public void PonerMusicaJuego()    => CambiarMusica(musicaJuego);
+    public void PonerMusicaGameOver() => CambiarMusica(musicaGameOver);
 }

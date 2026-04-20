@@ -1,149 +1,133 @@
-using System.Collections.Generic;
 using UnityEngine;
 
+// Script que crea tuberías cada cierto tiempo — ponlo en un GameObject vacío en la escena
+// El GameManager cambia 'velocidadActual' e 'intervaloSpawn' según el nivel
 public class SpawnerTuberias : MonoBehaviour
 {
+    // Singleton: TuberiasControlador lo usa para leer la velocidad actual
     public static SpawnerTuberias Instance { get; private set; }
 
-    [Header("Referencias")]
+    // Arrastra aquí el prefab de la tubería desde el Inspector
     public GameObject prefabTuberia;
 
-    [Header("Configuración de Spawn")]
+    // Posición X donde aparecen las tuberías (fuera de la pantalla por la derecha)
     public float posXSpawn = 10f;
-    public float alturaMin = -1.5f;
-    public float alturaMax = 2.0f;
 
-    [Header("Configuración Pool")]
-    public int tamañoPoolInicial = 5;
-    public int limitePoolSeguridad = 15; // MEJORA 3: Evita crecimiento infinito en RAM
-    
-    private Queue<GameObject> poolTuberias = new Queue<GameObject>();
+    // -------------------------------------------------------
+    // CONFIGURACIÓN DEL HUECO
+    //
+    // El prefab de tubería debe tener esta estructura:
+    //   TuberiaPrefab (raíz — tiene TuberiasControlador.cs)
+    //   ├── TuberiaInferior  (sprite de tubo mirando hacia arriba, BoxCollider2D, tag Obstaculo)
+    //   ├── TuberiaSuperior  (sprite de tubo mirando hacia abajo, BoxCollider2D, tag Obstaculo)
+    //   └── ZonaPuntos       (BoxCollider2D con Is Trigger marcado, en el hueco del medio)
+    //
+    // El punto central del prefab (0,0,0) debe coincidir con el CENTRO DEL HUECO.
+    // -------------------------------------------------------
 
-    [Header("Ajustes de Dificultad")]
-    public float velocidadActual { get; private set; }
-    private float intervaloSpawn;
-    private float temporizador;
+    [Header("Tamaño del hueco del prefab")]
+    [Tooltip("La mitad de la altura del hueco entre las dos tuberías.\n" +
+             "Ejemplo: si el hueco mide 3 unidades, pon 1.5")]
+    public float mitadHueco = 1.5f;
 
-    // MEJORA 7: Caché de referencias para no buscar la Instancia en cada frame
-    private GameManager gameManagerLocal;
-    private GestorNivel gestorNivelLocal;
+    [Header("Márgenes de la pantalla")]
+    [Tooltip("Espacio desde el borde inferior de la cámara hasta donde está el suelo")]
+    public float margenSuelo  = 1.8f;
+
+    [Tooltip("Espacio libre que dejamos en la parte superior de la pantalla")]
+    public float margenArriba = 0.8f;
+
+    // Límites calculados automáticamente en Start()
+    private float alturaMin;
+    private float alturaMax;
+
+    // -------------------------------------------------------
+    // VELOCIDAD E INTERVALO — los cambia GameManager según el nivel
+    // -------------------------------------------------------
+    [HideInInspector] public float velocidadActual = 3f;
+    [HideInInspector] public float intervaloSpawn  = 2.5f;
+
+    private float temporizador = 0f;
+    private bool  activo       = false;
+
+    // ======================================================
 
     void Awake()
     {
-        // MEJORA 1: Singleton estricto, pero local a la escena (sin DontDestroyOnLoad)
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
         Instance = this;
     }
 
     void Start()
     {
-        // MEJORA 4: Validación crítica inicial
-        if (prefabTuberia == null)
-        {
-            Debug.LogError("[SpawnerTuberias] ¡CRÍTICO! No se ha asignado el Prefab de la Tubería.");
-            return; 
-        }
-
-        // Llenamos la caché
-        gameManagerLocal = GameManager.Instance;
-        gestorNivelLocal = GestorNivel.Instance;
-
-        ConfigurarDificultad();
-        InicializarPool();
-        temporizador = intervaloSpawn;
+        CalcularLimitesAltura();
     }
 
-    void ConfigurarDificultad()
+    void CalcularLimitesAltura()
     {
-        // Validación segura de GestorNivel
-        int nivel = gestorNivelLocal != null ? gestorNivelLocal.ObtenerNivelActual() : 1;
-
-        switch (nivel)
+        if (Camera.main == null)
         {
-            case 1: velocidadActual = 3.5f; intervaloSpawn = 2.5f; break;
-            case 2: velocidadActual = 4.5f; intervaloSpawn = 2.0f; break;
-            case 3: velocidadActual = 5.5f; intervaloSpawn = 1.6f; break;
-            default: velocidadActual = 3.5f; intervaloSpawn = 2.5f; break;
+            Debug.LogWarning("[SpawnerTuberias] No se encontró la cámara principal. Usando límites por defecto.");
+            alturaMin = -2f;
+            alturaMax =  2f;
+            return;
         }
-    }
 
-    void InicializarPool()
-    {
-        for (int i = 0; i < tamañoPoolInicial; i++)
+        // orthographicSize es LA MITAD de la altura visible de la cámara
+        float medioAltura = Camera.main.orthographicSize;
+
+        // Límite inferior: borde de cámara + margen de suelo + mitad del hueco
+        alturaMin = -medioAltura + margenSuelo + mitadHueco;
+
+        // Límite superior: borde de cámara - margen arriba - mitad del hueco
+        alturaMax = medioAltura - margenArriba - mitadHueco;
+
+        if (alturaMin >= alturaMax)
         {
-            CrearTuberiaApagada();
+            Debug.LogError("[SpawnerTuberias] ¡Error! alturaMin >= alturaMax. " +
+                           "Revisa mitadHueco, margenSuelo y margenArriba.");
+            alturaMin = -1f;
+            alturaMax =  1f;
         }
-    }
-
-    private GameObject CrearTuberiaApagada()
-    {
-        GameObject tuberia = Instantiate(prefabTuberia, transform);
-        tuberia.SetActive(false);
-        poolTuberias.Enqueue(tuberia);
-        return tuberia;
     }
 
     void Update()
     {
-        if (gameManagerLocal != null && gameManagerLocal.EstaTerminada()) return;
+        if (!activo) return;
 
-        temporizador -= Time.deltaTime;
-        if (temporizador <= 0f)
+        temporizador += Time.deltaTime;
+
+        if (temporizador >= intervaloSpawn)
         {
             SpawnearTuberia();
-            temporizador = intervaloSpawn;
+            temporizador = 0f;
         }
     }
 
     void SpawnearTuberia()
     {
-        if (prefabTuberia == null) return;
-
-        GameObject tuberia;
-
-        // Comprobamos si el pool se ha quedado sin objetos
-        if (poolTuberias.Count == 0)
+        if (prefabTuberia == null)
         {
-            // MEJORA 3: Límite duro para evitar fugas de memoria extremas
-            if (transform.childCount < limitePoolSeguridad)
-            {
-                tuberia = CrearTuberiaApagada();
-                tuberia = poolTuberias.Dequeue();
-            }
-            else
-            {
-                Debug.LogWarning("[SpawnerTuberias] Límite de seguridad alcanzado. Cancelando spawn para proteger RAM.");
-                return;
-            }
-        }
-        else
-        {
-            tuberia = poolTuberias.Dequeue();
+            Debug.LogError("[SpawnerTuberias] No hay prefab de tubería asignado.");
+            return;
         }
 
+        // Elegimos una altura aleatoria para el CENTRO DEL HUECO dentro de los límites seguros
         float alturaAleatoria = Random.Range(alturaMin, alturaMax);
-        tuberia.transform.position = new Vector3(posXSpawn, alturaAleatoria, 0);
-        tuberia.SetActive(true);
+        Vector3 posicion = new Vector3(posXSpawn, alturaAleatoria, 0f);
+
+        Instantiate(prefabTuberia, posicion, Quaternion.identity);
     }
 
-    public void DevolverTuberia(GameObject tuberia)
+    // El GameManager llama a esto al iniciar o al respawnear tras perder una vida
+    public void Activar()
     {
-        tuberia.SetActive(false);
-        
-        // Evitamos meter la misma tubería dos veces seguidas por accidente
-        if (!poolTuberias.Contains(tuberia)) 
-        {
-            poolTuberias.Enqueue(tuberia);
-        }
+        activo       = true;
+        temporizador = 0f;  // Esperamos el tiempo completo antes de la primera tubería
     }
 
-    void OnDestroy()
+    // El GameManager llama a esto cuando el pájaro muere
+    public void Desactivar()
     {
-        // MEJORA 2: Limpieza absoluta del Pool (Previene Memory Leaks al cambiar de escena)
-        poolTuberias.Clear();
+        activo = false;
     }
 }

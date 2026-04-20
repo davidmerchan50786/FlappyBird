@@ -1,156 +1,289 @@
 using UnityEngine;
-using UnityEngine.SceneManagement;
-using System.Collections;
 
+// El cerebro del juego — controla vidas, niveles, puntuación y qué pantalla mostrar
+// Ponlo en un GameObject vacío llamado "GameManager" en la escena
 public class GameManager : MonoBehaviour
 {
-    // Singleton para acceso global
+    // Singleton: cualquier script puede usar GameManager.Instance para hablar con este
     public static GameManager Instance { get; private set; }
 
-    [Header("Configuración Vidas")]
+    // ---- CONFIGURACIÓN (ajustable desde el Inspector) ----
+
+    [Header("Vidas")]
     public int vidasMaximas = 3;
-    private int vidasActuales;
 
-    // Constantes para nombres de escenas (deben coincidir con tus Build Settings)
-    private const string ESCENA_JUEGO = "EscenaJuego";
-    private const string ESCENA_GAMEOVER = "GameOver";
+    [Header("Puntos para subir de nivel")]
+    public int puntosNivel2 = 10;   // Con 10 puntos pasamos al nivel 2
+    public int puntosNivel3 = 20;   // Con 20 puntos pasamos al nivel 3
 
-    private bool juegoTerminado = false;
-    private bool jugando = false;
-    
-    // Referencia para el control de la transición de Game Over
-    private Coroutine rutinaGameOver; 
+    // ---- DATOS DE LA PARTIDA ACTUAL ----
+
+    // JuegoActivo: true solo mientras la partida está en marcha
+    public bool JuegoActivo    { get; private set; } = false;
+
+    // JuegoTerminado: true solo cuando se acaban todas las vidas (no en menú ni respawn)
+    public bool JuegoTerminado { get; private set; } = false;
+
+    public int puntuacion      { get; private set; }
+    public int vidas           { get; private set; }
+    public int nivel           { get; private set; }
+    public int mejorPuntuacion { get; private set; }
+
+    // Clave para guardar el récord en el disco (PlayerPrefs)
+    private const string CLAVE_RECORD = "MejorPuntuacion";
+
+    // ---- REFERENCIAS (arrástralas desde el Inspector) ----
+
+    [Header("Referencias")]
+    public JugadorController jugador;
+    public SpawnerTuberias   spawnerTuberias;
+    public GestorUI          gestorUI;
+    public GestorAudio       gestorAudio;    // Opcional — sin música el juego funciona igual
+    public GestorFondo       gestorFondo;    // Cambia el sprite del fondo según pantalla y nivel
+    public ScrollFondo       scrollSuelo;   // El suelo usa el mismo script que el fondo
+
+    // ======================================================
+    //  INICIALIZACIÓN
+    // ======================================================
 
     void Awake()
     {
-        // Regla del Singleton: solo puede existir uno
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
         Instance = this;
-        DontDestroyOnLoad(gameObject); // Persiste entre escenas
 
-        // Inicialización de seguridad
-        vidasActuales = vidasMaximas; 
+        // Cargamos el mejor récord guardado en el disco (0 si nunca se ha jugado)
+        mejorPuntuacion = PlayerPrefs.GetInt(CLAVE_RECORD, 0);
     }
 
-    void OnEnable()
+    void Start()
     {
-        // Nos suscribimos al evento de carga de escenas de Unity
-        SceneManager.sceneLoaded += AlCargarEscena;
+        // Al abrir el juego mostramos la pantalla de bienvenida
+        MostrarMenuPrincipal();
     }
 
-    void OnDisable()
+    // ======================================================
+    //  PANTALLA DE BIENVENIDA
+    // ======================================================
+
+    void MostrarMenuPrincipal()
     {
-        // Limpiamos la suscripción al desactivar el objeto
-        SceneManager.sceneLoaded -= AlCargarEscena;
+        JuegoActivo    = false;
+        JuegoTerminado = false;
+        spawnerTuberias.Desactivar();
+        BorrarTuberias();
+
+        // Escondemos el pájaro hasta que el jugador pulse "Jugar"
+        jugador.gameObject.SetActive(false);
+
+        // Música y fondo del menú
+        gestorAudio?.PonerMusicaMenu();
+        gestorFondo?.CambiarAMenu();
+
+        // Solo mostramos el panel del menú, el resto se oculta
+        gestorUI.MostrarMenu(true);
+        gestorUI.MostrarHUD(false);
+        gestorUI.MostrarGameOver(false);
+        gestorUI.MostrarPantallaMuerte(false);
+
+        // Mostramos el récord en el menú
+        gestorUI.ActualizarMejorPuntuacion(mejorPuntuacion);
     }
 
-    // --- SOLUCIÓN AL PROBLEMA DE ESCENA PAUSADA ---
-    private void AlCargarEscena(Scene escena, LoadSceneMode modo)
-    {
-        // En cuanto entramos a la escena de juego, forzamos que el tiempo fluya
-        if (escena.name == ESCENA_JUEGO)
-        {
-            Time.timeScale = 1f;
-            Debug.Log("[GameManager] Tiempo reanudado: 1.0f");
-        }
-    }
+    // ======================================================
+    //  INICIO DE PARTIDA
+    //  Se llama cuando el jugador pulsa "Jugar" en el menú
+    // ======================================================
 
     public void IniciarPartida()
     {
-        // 1. Limpieza de memoria: evitamos duplicados en los eventos de la UI
-        EventosUI.LimpiarListeners(); 
+        // Reseteamos todos los contadores
+        puntuacion     = 0;
+        vidas          = vidasMaximas;
+        nivel          = 1;
+        JuegoTerminado = false;
 
-        // 2. Seguridad: cancelamos cualquier paso a GameOver que estuviera pendiente
-        if (rutinaGameOver != null) 
-        {
-            StopCoroutine(rutinaGameOver);
-            rutinaGameOver = null;
-        }
+        // Ajustamos la dificultad al nivel 1
+        ConfigurarNivel();
 
-        // 3. Validación: ¿existe la escena en el proyecto?
-        if (!Application.CanStreamedLevelBeLoaded(ESCENA_JUEGO))
-        {
-            Debug.LogError($"[GameManager] ¡Error! No se encuentra '{ESCENA_JUEGO}' en Build Settings.");
-            return; 
-        }
+        // Ponemos al jugador en su sitio
+        jugador.gameObject.SetActive(true);
+        jugador.Reiniciar();
 
-        // 4. Reset de lógica de juego
-        vidasActuales = vidasMaximas;
-        GestorNivel.Instance?.ReiniciarProgreso(); 
-        GestorPuntuacion.Instance?.ReiniciarPuntuacion(); 
-        
-        juegoTerminado = false;
-        jugando = true;
-        
-        // 5. Carga de escena
-        SceneManager.LoadScene(ESCENA_JUEGO);
+        // Limpiamos las tuberías que pudieran haber quedado de la partida anterior
+        BorrarTuberias();
+
+        // Actualizamos la UI: ocultamos menú y game over, mostramos el HUD de juego
+        gestorUI.MostrarMenu(false);
+        gestorUI.MostrarGameOver(false);
+        gestorUI.MostrarPantallaMuerte(false);
+        gestorUI.MostrarHUD(true);
+        gestorUI.ActualizarPuntuacion(0);
+        gestorUI.ActualizarVidas(vidas);
+        gestorUI.ActualizarNivel(nivel);
+
+        // Música del nivel 1 (ConfigurarNivel ya actualiza el fondo al nivel correcto)
+        gestorAudio?.PonerMusicaJuego();
+
+        // Arrancamos las tuberías y marcamos el juego como activo
+        spawnerTuberias.Activar();
+        JuegoActivo = true;
     }
+
+    // ======================================================
+    //  SUMAR PUNTOS
+    //  Se llama desde TuberiasControlador cuando el jugador pasa la zona de puntos
+    // ======================================================
+
+    public void SumarPuntos(int puntos = 1)
+    {
+        // Si el juego no está activo, ignoramos — por si llega tarde algún trigger
+        if (!JuegoActivo) return;
+
+        puntuacion += puntos;
+        gestorUI.ActualizarPuntuacion(puntuacion);
+
+        // Comprobamos si con esta puntuación hay que cambiar de nivel
+        int nivelNuevo = CalcularNivel();
+        if (nivelNuevo > nivel)
+        {
+            nivel = nivelNuevo;
+            ConfigurarNivel();                    // Cambiamos velocidad e intervalo
+            gestorUI.ActualizarNivel(nivel);      // Actualizamos el texto de nivel
+            gestorUI.AvisarSubidaNivel(nivel);    // Mostramos "¡NIVEL 2!" en pantalla
+        }
+    }
+
+    // ======================================================
+    //  PÉRDIDA DE VIDA
+    //  Se llama desde JugadorController cuando choca con algo
+    // ======================================================
 
     public void PerderVida()
     {
-        if (juegoTerminado) return;
+        // Doble protección: si ya no estamos jugando, ignoramos
+        if (!JuegoActivo) return;
 
-        vidasActuales--;
-        
-        // Notificamos a la UI mediante el bus de eventos seguro
-        EventosUI.InvocarVidasCambiadas(vidasActuales);
+        JuegoActivo = false;
+        spawnerTuberias.Desactivar();
 
-        if (vidasActuales <= 0)
+        // Quitamos una vida y actualizamos la UI
+        vidas--;
+        gestorUI.ActualizarVidas(vidas);
+
+        if (vidas <= 0)
         {
-            ActivarGameOver();
+            // --- Sin vidas: guardamos récord y mostramos pantalla de GAME OVER ---
+            JuegoTerminado = true;
+            GuardarRecord();
+            gestorAudio?.PonerMusicaGameOver();
+            gestorFondo?.CambiarAGameOver();
+            gestorUI.MostrarGameOver(true);
+            gestorUI.MostrarPuntuacionFinal(puntuacion, mejorPuntuacion);
         }
         else
         {
-            // Recargamos el nivel actual para reintentar
-            string escenaActual = SceneManager.GetActiveScene().name;
-            if (Application.CanStreamedLevelBeLoaded(escenaActual))
-                SceneManager.LoadScene(escenaActual);
+            // --- Queda vida: mostramos pantalla de "perdiste una vida"
+            // y en 1.5 segundos volvemos a jugar automáticamente ---
+            BorrarTuberias();
+            gestorUI.MostrarPantallaMuerte(true);
+            Invoke(nameof(RespawnTrasVida), 1.5f);
         }
     }
 
-    public void SumarPuntos(int puntos)
+    // Se llama automáticamente 1.5s después de perder una vida (no game over)
+    void RespawnTrasVida()
     {
-        if (!jugando || juegoTerminado) return;
-        
-        // Delegamos la puntuación a su gestor
-        GestorPuntuacion.Instance?.SumarPuntos(puntos);
-        
-        // Evaluamos si toca subir de nivel
-        int puntosTotales = GestorPuntuacion.Instance != null ? GestorPuntuacion.Instance.PuntuacionActual : 0;
-        GestorNivel.Instance?.EvaluarPuntuacion(puntosTotales);
+        gestorUI.MostrarPantallaMuerte(false);
+        jugador.Reiniciar();
+        spawnerTuberias.Activar();
+        JuegoActivo = true;
     }
 
-    private void ActivarGameOver()
-    {
-        juegoTerminado = true;
-        jugando = false;
+    // ======================================================
+    //  BOTONES DE LA PANTALLA DE GAME OVER
+    // ======================================================
 
-        // Guardamos récord en disco antes de salir
-        GestorPuntuacion.Instance?.GuardarMejorPuntuacion();
-        
-        // Iniciamos la espera visual antes de cambiar de pantalla
-        rutinaGameOver = StartCoroutine(RutinaTransicionGameOver());
+    // Botón "Reintentar" — vuelve a empezar desde cero
+    public void Reintentar()
+    {
+        CancelInvoke(); // Por si había un respawn pendiente
+        IniciarPartida();
     }
 
-    private IEnumerator RutinaTransicionGameOver()
+    // Botón "Menú" — vuelve a la pantalla de bienvenida
+    public void VolverAlMenu()
     {
-        // Dejamos un tiempo para que el jugador vea el choque (1.5 seg)
-        yield return new WaitForSecondsRealtime(1.5f);
-        
-        if (Application.CanStreamedLevelBeLoaded(ESCENA_GAMEOVER))
+        CancelInvoke();
+        MostrarMenuPrincipal();
+    }
+
+    // ======================================================
+    //  MÉTODOS DE CONSULTA (para otros scripts)
+    // ======================================================
+
+    public int  ObtenerVidas()        => vidas;
+    public bool EstaTerminada()       => !JuegoActivo;   // Lo usa TuberiasControlador (para el movimiento)
+    public bool EstaJuegoTerminado()  => JuegoTerminado; // Lo usa ScrollFondo (solo para cuando se acaban las vidas)
+
+    // ======================================================
+    //  RÉCORD
+    // ======================================================
+
+    void GuardarRecord()
+    {
+        if (puntuacion > mejorPuntuacion)
         {
-            SceneManager.LoadScene(ESCENA_GAMEOVER);
-        }
-        else
-        {
-            Debug.LogError($"[GameManager] Escena '{ESCENA_GAMEOVER}' no encontrada.");
+            mejorPuntuacion = puntuacion;
+            PlayerPrefs.SetInt(CLAVE_RECORD, mejorPuntuacion);
+            PlayerPrefs.Save();
         }
     }
 
-    public int ObtenerVidas() => vidasActuales;
-    public bool EstaTerminada() => juegoTerminado;
+    // ======================================================
+    //  CONFIGURACIÓN DE NIVELES
+    //  Cambia velocidad y frecuencia de tuberías según el nivel
+    // ======================================================
+
+    void ConfigurarNivel()
+    {
+        // Nivel 1 → Fácil:   tuberías lentas, bastante espacio entre ellas
+        // Nivel 2 → Medio:   más rápido y más frecuente
+        // Nivel 3 → Difícil: muy rápidas y seguidas, hay que ser preciso
+
+        switch (nivel)
+        {
+            case 1:
+                spawnerTuberias.velocidadActual = 3.0f;
+                spawnerTuberias.intervaloSpawn  = 2.5f;
+                break;
+            case 2:
+                spawnerTuberias.velocidadActual = 4.5f;
+                spawnerTuberias.intervaloSpawn  = 2.0f;
+                break;
+            case 3:
+                spawnerTuberias.velocidadActual = 6.0f;
+                spawnerTuberias.intervaloSpawn  = 1.6f;
+                break;
+        }
+
+        // El suelo se mueve a la misma velocidad que las tuberías para que quede coherente
+        if (scrollSuelo != null) scrollSuelo.velocidad = spawnerTuberias.velocidadActual;
+
+        // Cambiamos el fondo según el nivel actual (día → tarde → noche)
+        gestorFondo?.CambiarANivel(nivel);
+    }
+
+    // Mira la puntuación y devuelve en qué nivel debería estar el jugador
+    int CalcularNivel()
+    {
+        if (puntuacion >= puntosNivel3) return 3;
+        if (puntuacion >= puntosNivel2) return 2;
+        return 1;
+    }
+
+    // Busca y destruye todas las tuberías que hay en la escena
+    void BorrarTuberias()
+    {
+        foreach (GameObject t in GameObject.FindGameObjectsWithTag("Obstaculo"))
+            Destroy(t);
+    }
 }
